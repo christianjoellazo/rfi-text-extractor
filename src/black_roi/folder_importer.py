@@ -11,6 +11,63 @@ from PIL import Image, ImageFile
 # Allow PIL to load broken/truncated JPEGs
 ImageFile.LOAD_TRUNCATED_IMAGES = True
 
+def safe_load_image(input_path: Path) -> Image.Image | None:
+    """
+    Attempt to load an image with multiple fallback strategies.
+    Returns PIL Image in RGB mode or None if all methods fail.
+    """
+    
+    # Strategy 1: Check if it's a real image file
+    if imghdr.what(input_path) is None:
+        print(f"⚠️ File type check failed: {input_path.name}")
+        return None
+    
+    # Strategy 2: Standard PIL open
+    try:
+        with Image.open(input_path) as im:
+            # Convert to RGB to handle CMYK, LA, P modes
+            return im.convert("RGB")
+    except Exception as e:
+        print(f"⚠️ Standard load failed: {e}")
+    
+    # Strategy 3: Load via raw bytes
+    try:
+        with open(input_path, "rb") as f:
+            data = f.read()
+        img = Image.open(io.BytesIO(data))
+        return img.convert("RGB")
+    except Exception as e:
+        print(f"⚠️ Byte load failed: {e}")
+    
+    # Strategy 4: Try forcing format based on extension
+    try:
+        with open(input_path, "rb") as f:
+            data = f.read()
+        
+        # Get extension and try to force the format
+        ext = input_path.suffix.lower().strip('.')
+        if ext == 'jpg':
+            ext = 'jpeg'
+        
+        img = Image.open(io.BytesIO(data), formats=[ext.upper()])
+        return img.convert("RGB")
+    except Exception as e:
+        print(f"⚠️ Forced format load failed: {e}")
+    
+    # Strategy 5: Try all common formats
+    common_formats = ['JPEG', 'PNG', 'BMP', 'TIFF', 'GIF', 'WEBP']
+    for fmt in common_formats:
+        try:
+            with open(input_path, "rb") as f:
+                data = f.read()
+            img = Image.open(io.BytesIO(data), formats=[fmt])
+            print(f"✔️ Successfully loaded as {fmt}: {input_path.name}")
+            return img.convert("RGB")
+        except:
+            continue
+    
+    return None
+
 
 def process_images(input_folder: Path, process_fn: Callable, output_folder_name="output", ocr_results=None) -> list[str]:
     output_folder = input_folder / output_folder_name
@@ -63,23 +120,29 @@ def process_images(input_folder: Path, process_fn: Callable, output_folder_name=
                     skipped_count += 1
                     continue
 
-                # -------- SAFETY CHECK 2: attempt opening with recovery ----------
                 img = None
                 try:
                     with Image.open(input_path) as im:
-                        img = im.convert("RGB")  # Fix CMYK, etc.
+                        img = im.convert("RGB")
                 except Exception as e:
                     log(f"⚠️ Primary load failed, trying fallback: {input_path} ({e})")
-
-                    # Fallback: read raw bytes
+                    
+                    # Try multiple fallback strategies
                     try:
+                        # Strategy 1: Raw bytes
                         data = open(input_path, "rb").read()
                         img = Image.open(io.BytesIO(data)).convert("RGB")
-                        log(f"✔ Recovered using fallback loader: {input_path}")
-                    except Exception as e2:
-                        log(f"❌ FATAL: Cannot open image even after fallback: {input_path} ({e2})")
-                        skipped_count += 1
-                        continue
+                        log(f"✔ Recovered using byte loader")
+                    except:
+                        try:
+                            # Strategy 2: Force JPEG format
+                            data = open(input_path, "rb").read()
+                            img = Image.open(io.BytesIO(data), formats=['JPEG']).convert("RGB")
+                            log(f"✔ Recovered by forcing JPEG format")
+                        except Exception as e2:
+                            log(f"❌ FATAL: Cannot open image: {input_path} ({e2})")
+                            skipped_count += 1
+                            continue
 
                 # -------- PROCESS THE IMAGE ----------
                 try:

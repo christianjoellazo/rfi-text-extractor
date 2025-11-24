@@ -11,61 +11,41 @@ from PIL import Image, ImageFile
 # Allow PIL to load broken/truncated JPEGs
 ImageFile.LOAD_TRUNCATED_IMAGES = True
 
-def safe_load_image(input_path: Path) -> Image.Image | None:
-    """
-    Attempt to load an image with multiple fallback strategies.
-    Returns PIL Image in RGB mode or None if all methods fail.
-    """
+
+def safe_load_image(input_path: Path, log_func=print) -> Image.Image | None:
+    """Try multiple strategies to load image, return None if all fail."""
     
-    # Strategy 1: Check if it's a real image file
-    if imghdr.what(input_path) is None:
-        print(f"⚠️ File type check failed: {input_path.name}")
-        return None
-    
-    # Strategy 2: Standard PIL open
+    # Strategy 1: Standard PIL
     try:
         with Image.open(input_path) as im:
-            # Convert to RGB to handle CMYK, LA, P modes
             return im.convert("RGB")
-    except Exception as e:
-        print(f"⚠️ Standard load failed: {e}")
+    except Exception:
+        pass
     
-    # Strategy 3: Load via raw bytes
+    # Strategy 2: Load via bytes
     try:
         with open(input_path, "rb") as f:
             data = f.read()
         img = Image.open(io.BytesIO(data))
         return img.convert("RGB")
-    except Exception as e:
-        print(f"⚠️ Byte load failed: {e}")
+    except Exception:
+        pass
     
-    # Strategy 4: Try forcing format based on extension
+    # Strategy 3: Force format based on extension
     try:
         with open(input_path, "rb") as f:
             data = f.read()
-        
-        # Get extension and try to force the format
         ext = input_path.suffix.lower().strip('.')
         if ext == 'jpg':
             ext = 'jpeg'
-        
         img = Image.open(io.BytesIO(data), formats=[ext.upper()])
+        log_func(f"✔️ Loaded by forcing {ext.upper()}: {input_path.name}")
         return img.convert("RGB")
-    except Exception as e:
-        print(f"⚠️ Forced format load failed: {e}")
+    except Exception:
+        pass
     
-    # Strategy 5: Try all common formats
-    common_formats = ['JPEG', 'PNG', 'BMP', 'TIFF', 'GIF', 'WEBP']
-    for fmt in common_formats:
-        try:
-            with open(input_path, "rb") as f:
-                data = f.read()
-            img = Image.open(io.BytesIO(data), formats=[fmt])
-            print(f"✔️ Successfully loaded as {fmt}: {input_path.name}")
-            return img.convert("RGB")
-        except:
-            continue
-    
+    # All failed - skip this file
+    log_func(f"⏭️  Skipping unsupported file: {input_path.name}")
     return None
 
 
@@ -114,35 +94,13 @@ def process_images(input_folder: Path, process_fn: Callable, output_folder_name=
                 processed_path = output_folder / relative_path.parent / processed_name
                 processed_path.parent.mkdir(parents=True, exist_ok=True)
 
-                # -------- SAFETY CHECK 1: detect if real image ----------
-                if imghdr.what(input_path) is None:
-                    log(f"⚠️ Not an image despite extension: {input_path}")
+                # -------- LOAD IMAGE WITH SAFE FALLBACK ----------
+                img = safe_load_image(input_path, log_func=log)
+                
+                if img is None:
+                    log(f"⏭️  Skipping file and continuing: {relative_path}\n")
                     skipped_count += 1
-                    continue
-
-                img = None
-                try:
-                    with Image.open(input_path) as im:
-                        img = im.convert("RGB")
-                except Exception as e:
-                    log(f"⚠️ Primary load failed, trying fallback: {input_path} ({e})")
-                    
-                    # Try multiple fallback strategies
-                    try:
-                        # Strategy 1: Raw bytes
-                        data = open(input_path, "rb").read()
-                        img = Image.open(io.BytesIO(data)).convert("RGB")
-                        log(f"✔ Recovered using byte loader")
-                    except:
-                        try:
-                            # Strategy 2: Force JPEG format
-                            data = open(input_path, "rb").read()
-                            img = Image.open(io.BytesIO(data), formats=['JPEG']).convert("RGB")
-                            log(f"✔ Recovered by forcing JPEG format")
-                        except Exception as e2:
-                            log(f"❌ FATAL: Cannot open image: {input_path} ({e2})")
-                            skipped_count += 1
-                            continue
+                    continue  # Skip and move to next file
 
                 # -------- PROCESS THE IMAGE ----------
                 try:
@@ -157,7 +115,7 @@ def process_images(input_folder: Path, process_fn: Callable, output_folder_name=
                 except Exception as e:
                     log(f"❌ Processing failed for {input_path} ({e})")
                     skipped_count += 1
-                    continue
+                    continue  # Skip and move to next file
 
     # -------- SUMMARY ----------
     summary = (

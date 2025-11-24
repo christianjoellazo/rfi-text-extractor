@@ -1,52 +1,10 @@
 import os
-import io
-import imghdr
 from pathlib import Path
 from typing import Callable
 
 import numpy as np
 import pandas as pd
-from PIL import Image, ImageFile
-
-# Allow PIL to load broken/truncated JPEGs
-ImageFile.LOAD_TRUNCATED_IMAGES = True
-
-
-def safe_load_image(input_path: Path, log_func=print) -> Image.Image | None:
-    """Try multiple strategies to load image, return None if all fail."""
-    
-    # Strategy 1: Standard PIL
-    try:
-        with Image.open(input_path) as im:
-            return im.convert("RGB")
-    except Exception:
-        pass
-    
-    # Strategy 2: Load via bytes
-    try:
-        with open(input_path, "rb") as f:
-            data = f.read()
-        img = Image.open(io.BytesIO(data))
-        return img.convert("RGB")
-    except Exception:
-        pass
-    
-    # Strategy 3: Force format based on extension
-    try:
-        with open(input_path, "rb") as f:
-            data = f.read()
-        ext = input_path.suffix.lower().strip('.')
-        if ext == 'jpg':
-            ext = 'jpeg'
-        img = Image.open(io.BytesIO(data), formats=[ext.upper()])
-        log_func(f"✔️ Loaded by forcing {ext.upper()}: {input_path.name}")
-        return img.convert("RGB")
-    except Exception:
-        pass
-    
-    # All failed - skip this file
-    log_func(f"⏭️  Skipping unsupported file: {input_path.name}")
-    return None
+from PIL import Image
 
 
 def process_images(input_folder: Path, process_fn: Callable, output_folder_name="output", ocr_results=None) -> list[str]:
@@ -63,7 +21,7 @@ def process_images(input_folder: Path, process_fn: Callable, output_folder_name=
 
     original_stems = []
 
-    # Counters
+    # Counters for summary
     processed_count = 0
     skipped_count = 0
     total_images = 0
@@ -71,7 +29,7 @@ def process_images(input_folder: Path, process_fn: Callable, output_folder_name=
     for root, dirs, files in os.walk(input_folder):
         root_path = Path(root)
 
-        # Skip output folder
+        # Prevent recursive processing of output folder
         if output_folder in root_path.parents or root_path == output_folder:
             continue
 
@@ -83,7 +41,7 @@ def process_images(input_folder: Path, process_fn: Callable, output_folder_name=
 
                 stem, suffix = relative_path.stem, relative_path.suffix
 
-                # OCR prefix logic
+                # OCR prefix
                 ocr_text = ""
                 if ocr_results and stem in ocr_results:
                     x_vals = ocr_results[stem].get('X', [])
@@ -94,30 +52,23 @@ def process_images(input_folder: Path, process_fn: Callable, output_folder_name=
                 processed_path = output_folder / relative_path.parent / processed_name
                 processed_path.parent.mkdir(parents=True, exist_ok=True)
 
-                # -------- LOAD IMAGE WITH SAFE FALLBACK ----------
-                img = safe_load_image(input_path, log_func=log)
-                
-                if img is None:
-                    log(f"⏭️  Skipping file and continuing: {relative_path}\n")
-                    skipped_count += 1
-                    continue  # Skip and move to next file
-
-                # -------- PROCESS THE IMAGE ----------
+                # Try processing
                 try:
-                    array = np.array(img)
-                    processed_array = process_fn(array)
-                    Image.fromarray(processed_array).save(processed_path)
+                    with Image.open(input_path) as img:
+                        array = np.array(img)
+                        processed_array = process_fn(array)
+                        Image.fromarray(processed_array).save(processed_path)
 
                     log(f"🖼️ Saved: {processed_path}")
                     original_stems.append(stem)
                     processed_count += 1
 
                 except Exception as e:
-                    log(f"❌ Processing failed for {input_path} ({e})")
+                    log(f"⚠️ Skipped unsupported or corrupted file: {input_path} ({e})")
                     skipped_count += 1
-                    continue  # Skip and move to next file
+                    continue
 
-    # -------- SUMMARY ----------
+    # Summary
     summary = (
         "\n========== PROCESS SUMMARY ==========\n"
         f"Total images scanned : {total_images}\n"
